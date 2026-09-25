@@ -48,18 +48,24 @@ export async function evaluateAttempt(attemptId) {
     technical: { section: 'technical', sectionTitle: 'Technical Core', score: 0, total: 5, percentage: 0 },
   };
 
+  const config = memoryStore.assessmentConfig || {};
+
   for (const item of answersList) {
     const isCorrect = item.selected_option && item.correct_option &&
       item.selected_option.toUpperCase() === item.correct_option.toUpperCase();
 
-    const marksAwarded = isCorrect ? (item.marks || 1) : 0;
+    let marksAwarded = 0;
     if (isCorrect) {
+      marksAwarded = item.marks || config.marksPerQuestion || 1;
+      totalScore += marksAwarded;
+    } else if (item.selected_option && config.negativeMarking) {
+      marksAwarded = -(config.negativeMarkPenalty || 0.25);
       totalScore += marksAwarded;
     }
 
     const secKey = item.section ? item.section.toLowerCase() : 'aptitude';
     if (sectionScores[secKey]) {
-      if (isCorrect) sectionScores[secKey].score += marksAwarded;
+      sectionScores[secKey].score += marksAwarded;
     }
 
     // Update answer record with correctness
@@ -77,9 +83,9 @@ export async function evaluateAttempt(attemptId) {
     s.percentage = s.total > 0 ? parseFloat(((s.score / s.total) * 100).toFixed(1)) : 0;
   });
 
-  const totalMarks = 40;
-  const percentage = parseFloat(((totalScore / totalMarks) * 100).toFixed(1));
-  const passingCutoff = attempt.passing_percentage || 60.0;
+  const totalMarks = attempt.total_marks || config.totalQuestions || (answersList.length > 0 ? answersList.length : 40);
+  const percentage = totalMarks > 0 ? parseFloat(((totalScore / totalMarks) * 100).toFixed(1)) : 0;
+  const passingCutoff = attempt.passing_percentage || config.passingPercentage || 60.0;
 
   let finalStatus = 'NOT_QUALIFIED';
   if (attempt.status === 'TERMINATED') {
@@ -87,6 +93,7 @@ export async function evaluateAttempt(attemptId) {
   } else {
     finalStatus = percentage >= passingCutoff ? 'CLEARED' : 'NOT_QUALIFIED';
   }
+
 
   const now = new Date();
 

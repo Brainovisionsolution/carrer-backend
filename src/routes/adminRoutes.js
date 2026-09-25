@@ -17,6 +17,8 @@ import {
   deleteCandidate,
   clearAllCandidates,
   deduplicateQuestions,
+  getAssessmentConfig,
+  updateAssessmentConfig,
 } from '../controllers/adminController.js';
 import { authenticateAdmin } from '../middleware/auth.js';
 
@@ -27,6 +29,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 router.use(authenticateAdmin);
 
 router.get('/dashboard/kpis', getDashboardKpis);
+router.get('/config', getAssessmentConfig);
+router.put('/config', updateAssessmentConfig);
+
 router.get('/candidates', getCandidates);
 router.post('/candidates/deduplicate', deduplicateCandidates);
 router.post('/candidates/clear-all', clearAllCandidates);
@@ -45,6 +50,7 @@ router.post('/questions/clear', clearAllQuestions);
 
 router.post('/interviews', scheduleInterview);
 router.get('/export/results', exportResultsCsv);
+
 
 export default router;
 

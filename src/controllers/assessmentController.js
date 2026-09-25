@@ -72,10 +72,12 @@ export async function startAssessment(req, res) {
     }
 
     // 2. Create NEW authoritative assessment attempt
+    const config = memoryStore.assessmentConfig || {};
     const attemptCode = `ATT-2026-0926-${String(Math.floor(100000 + Math.random() * 900000))}`;
-    const durationMinutes = 45;
+    const durationMinutes = config.durationMinutes || 45;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000);
+
 
     let attemptId = null;
 
@@ -438,3 +440,22 @@ export async function recordSecurityEvent(req, res) {
     return res.status(500).json({ success: false, message: 'Failed to record security event.', error: err.message });
   }
 }
+
+// Public or candidate-accessible config for rules, timing, and cutoffs
+export async function getCandidateAssessmentConfig(req, res) {
+  try {
+    const config = memoryStore.assessmentConfig || {
+      title: 'Brainovision Campus Recruitment Assessment — 2026',
+      durationMinutes: 45,
+      passingPercentage: 60,
+      totalQuestions: 40,
+      maxTabSwitches: 2,
+      maxFullscreenExits: 2,
+      securityLevel: 'strict',
+    };
+    return res.status(200).json({ success: true, config });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+

@@ -876,3 +876,81 @@ export async function deduplicateQuestions(req, res) {
   }
 }
 
+// Get Admin Assessment Configuration
+export async function getAssessmentConfig(req, res) {
+  try {
+    const config = memoryStore.assessmentConfig || {
+      id: 'campus-2026-phase1',
+      title: 'Brainovision Campus Recruitment Assessment — 2026',
+      durationMinutes: 45,
+      passingPercentage: 60,
+      totalQuestions: 40,
+      marksPerQuestion: 1,
+      negativeMarking: false,
+      negativeMarkPenalty: 0.25,
+      maxTabSwitches: 2,
+      maxFullscreenExits: 2,
+      securityLevel: 'strict',
+      sections: [
+        { id: 'aptitude', title: 'Quantitative Aptitude', count: 15 },
+        { id: 'reasoning', title: 'Logical Reasoning', count: 10 },
+        { id: 'verbal', title: 'Verbal Ability', count: 10 },
+        { id: 'technical', title: 'Technical Core', count: 5 },
+      ],
+    };
+    return res.status(200).json({ success: true, config });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// Update Admin Assessment Configuration (Exam duration, Cutoff %, Total Marks, Security limits)
+export async function updateAssessmentConfig(req, res) {
+  try {
+    const {
+      title,
+      durationMinutes,
+      passingPercentage,
+      totalQuestions,
+      marksPerQuestion,
+      negativeMarking,
+      negativeMarkPenalty,
+      maxTabSwitches,
+      maxFullscreenExits,
+      securityLevel,
+      sections,
+      scheduleStart,
+      scheduleEnd,
+    } = req.body;
+
+    const current = memoryStore.assessmentConfig || {};
+
+    memoryStore.assessmentConfig = {
+      ...current,
+      title: title || current.title || 'Brainovision Campus Recruitment Assessment — 2026',
+      durationMinutes: durationMinutes ? Number(durationMinutes) : (current.durationMinutes || 45),
+      passingPercentage: passingPercentage !== undefined ? Number(passingPercentage) : (current.passingPercentage || 60),
+      totalQuestions: totalQuestions ? Number(totalQuestions) : (current.totalQuestions || 40),
+      marksPerQuestion: marksPerQuestion ? Number(marksPerQuestion) : (current.marksPerQuestion || 1),
+      negativeMarking: negativeMarking !== undefined ? Boolean(negativeMarking) : Boolean(current.negativeMarking),
+      negativeMarkPenalty: negativeMarkPenalty !== undefined ? Number(negativeMarkPenalty) : (current.negativeMarkPenalty || 0.25),
+      maxTabSwitches: maxTabSwitches !== undefined ? Number(maxTabSwitches) : (current.maxTabSwitches || 2),
+      maxFullscreenExits: maxFullscreenExits !== undefined ? Number(maxFullscreenExits) : (current.maxFullscreenExits || 2),
+      securityLevel: securityLevel || current.securityLevel || 'strict',
+      sections: Array.isArray(sections) ? sections : (current.sections || []),
+      scheduleStart: scheduleStart || current.scheduleStart,
+      scheduleEnd: scheduleEnd || current.scheduleEnd,
+      updatedAt: new Date().toISOString(),
+    };
+
+    return res.status(200).json({
+      success: true,
+      message: 'Assessment configuration and cutoff criteria successfully updated.',
+      config: memoryStore.assessmentConfig,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+

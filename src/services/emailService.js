@@ -107,7 +107,7 @@ export async function sendCandidateCredentialsEmail(candidate, tempPassword) {
         html,
       });
       status = 'DELIVERED';
-      console.log(`✓ Email delivered to ${candidate.email} (Msg ID: ${info.messageId})`);
+      console.log(`[OK] Email delivered to ${candidate.email} (Msg ID: ${info.messageId})`);
     } else {
       // In development or simulated mode: successfully generated and logged to database
       status = 'DELIVERED';

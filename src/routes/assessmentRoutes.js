@@ -6,12 +6,16 @@ import {
   heartbeat,
   submitAssessmentAttempt,
   recordSecurityEvent,
+  getCandidateAssessmentConfig,
 } from '../controllers/assessmentController.js';
 import { authenticateCandidate } from '../middleware/auth.js';
 
 const router = Router();
 
-// All candidate assessment endpoints require candidate JWT authentication
+// Public exam configuration (duration, cutoff %, security rules)
+router.get('/config', getCandidateAssessmentConfig);
+
+// All candidate assessment attempts require candidate JWT authentication
 router.use(authenticateCandidate);
 
 router.post('/start', startAssessment);
@@ -22,3 +26,4 @@ router.post('/attempt/:id/submit', submitAssessmentAttempt);
 router.post('/security-events', recordSecurityEvent);
 
 export default router;
+

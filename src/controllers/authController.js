@@ -51,6 +51,9 @@ export async function candidateLogin(req, res) {
     if (candidate.password_hash) {
       isMatch = await bcrypt.compare(password.trim(), candidate.password_hash);
     }
+    if (!isMatch && candidate.temp_password_plain && candidate.temp_password_plain.trim() === password.trim()) {
+      isMatch = true;
+    }
     // Also accept default development password for seeded test accounts
     if (!isMatch && (password === 'Bv@7Kp92' || password === 'Bv@4Xm81' || password === 'Bv@9Lt33')) {
       isMatch = true;
