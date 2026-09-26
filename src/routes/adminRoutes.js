@@ -19,6 +19,8 @@ import {
   deduplicateQuestions,
   getAssessmentConfig,
   updateAssessmentConfig,
+  togglePublishAssessment,
+  importQuestionsBatch,
 } from '../controllers/adminController.js';
 import { authenticateAdmin } from '../middleware/auth.js';
 
@@ -31,6 +33,7 @@ router.use(authenticateAdmin);
 router.get('/dashboard/kpis', getDashboardKpis);
 router.get('/config', getAssessmentConfig);
 router.put('/config', updateAssessmentConfig);
+router.post('/assessment/publish', togglePublishAssessment);
 
 router.get('/candidates', getCandidates);
 router.post('/candidates/deduplicate', deduplicateCandidates);
@@ -43,6 +46,7 @@ router.post('/candidates/send-credentials', sendCredentials);
 
 router.get('/questions', getQuestions);
 router.post('/questions', createQuestion);
+router.post('/questions/import', importQuestionsBatch);
 router.post('/questions/deduplicate', deduplicateQuestions);
 router.put('/questions/:id', updateQuestion);
 router.delete('/questions/:id', deleteQuestion);

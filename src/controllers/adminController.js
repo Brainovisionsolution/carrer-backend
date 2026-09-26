@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import xlsx from 'xlsx';
 import { query, memoryStore, isDbConnected } from '../config/db.js';
 import { sendCandidateCredentialsEmail } from '../services/emailService.js';
+import { getActiveAssessment, saveAssessmentConfig, toggleAssessmentPublish } from '../services/assessmentConfigService.js';
 
 export async function getDashboardKpis(req, res) {
   try {
@@ -202,74 +203,159 @@ export async function importCandidates(req, res) {
     }
 
     if (records.length === 0) {
-      return res.status(400).json({ success: false, message: 'Empty dataset provided.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Empty dataset provided.',
+      });
     }
 
-    // Validation & duplicate detection
+    // ---------------------------------------------------------
+    // Existing email detection
+    // ---------------------------------------------------------
     const existingEmails = new Set();
+
     if (isDbConnected()) {
       const dbEmails = await query(`SELECT email FROM candidates`);
-      dbEmails.forEach((r) => existingEmails.add(r.email.toLowerCase().trim()));
+
+      dbEmails.forEach((r) => {
+        if (r.email) {
+          existingEmails.add(r.email.toLowerCase().trim());
+        }
+      });
     } else {
-      memoryStore.candidates.forEach((r) => existingEmails.add(r.email.toLowerCase().trim()));
+      memoryStore.candidates.forEach((r) => {
+        if (r.email) {
+          existingEmails.add(r.email.toLowerCase().trim());
+        }
+      });
     }
 
     const seenInBatch = new Set();
+
     let duplicates = 0;
     let invalid = 0;
+
     const validRecords = [];
 
-    // Determine starting index for Candidate ID generation
+    // ---------------------------------------------------------
+    // Determine next candidate ID
+    // ---------------------------------------------------------
     let nextIndex = 1;
+
     if (isDbConnected()) {
-      const maxRow = await query(`SELECT COUNT(*) as count FROM candidates`);
-      nextIndex = (maxRow[0]?.count || 0) + 1;
+      const maxRow = await query(
+        `SELECT COUNT(*) AS count FROM candidates`
+      );
+
+      nextIndex = Number(maxRow[0]?.count || 0) + 1;
     } else {
       nextIndex = memoryStore.candidates.length + 1;
     }
 
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    // ---------------------------------------------------------
+    // Password character set
+    // Avoid confusing characters like O/0/I/l
+    // ---------------------------------------------------------
+    const chars =
+      'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
 
+    // ---------------------------------------------------------
+    // Process records
+    // ---------------------------------------------------------
     for (const row of records) {
-      const name = (row.name || row.Name || '').trim();
-      const email = (row.email || row.Email || '').toLowerCase().trim();
-      const phone = String(row.phone || row.Phone || '').trim();
-      const college = (row.college || row.College || '').trim();
-      const branch = (row.branch || row.Branch || '').trim();
-      const graduationYear = String(row.graduation_year || row.GraduationYear || '2026').trim();
-      const position = (row.position || row.Position || 'Graduate Trainee').trim();
+      const name = String(row.name || row.Name || '').trim();
 
+      const email = String(
+        row.email || row.Email || ''
+      )
+        .toLowerCase()
+        .trim();
+
+      const phone = String(
+        row.phone || row.Phone || ''
+      ).trim();
+
+      const college = String(
+        row.college || row.College || ''
+      ).trim();
+
+      const branch = String(
+        row.branch || row.Branch || ''
+      ).trim();
+
+      const graduationYear = String(
+        row.graduation_year ||
+        row.GraduationYear ||
+        '2026'
+      ).trim();
+
+      const position = String(
+        row.position ||
+        row.Position ||
+        'Graduate Trainee'
+      ).trim();
+
+      // -------------------------------------------------------
+      // Validation
+      // -------------------------------------------------------
       if (!name || !email || !college || !branch) {
         invalid++;
         continue;
       }
 
-      // Check duplicates
-      if (existingEmails.has(email) || seenInBatch.has(email)) {
+      // -------------------------------------------------------
+      // Duplicate detection
+      // -------------------------------------------------------
+      if (
+        existingEmails.has(email) ||
+        seenInBatch.has(email)
+      ) {
         duplicates++;
         continue;
       }
 
       seenInBatch.add(email);
 
-      // Generate Candidate ID: BV26-0001
+      // -------------------------------------------------------
+      // Generate Candidate ID
+      // Example: BV26-0001
+      // -------------------------------------------------------
       const pad = String(nextIndex).padStart(4, '0');
+
       const candidateId = `BV26-${pad}`;
 
-      // Generate secure temporary password
+      // -------------------------------------------------------
+      // Generate temporary password
+      // Example: Bv@a7KxP2#
+      // -------------------------------------------------------
       let tempPassword = 'Bv@';
+
       for (let i = 0; i < 5; i++) {
-        tempPassword += chars.charAt(Math.floor(Math.random() * chars.length));
+        tempPassword += chars.charAt(
+          Math.floor(Math.random() * chars.length)
+        );
       }
+
       tempPassword += '#';
 
-      // Hash password with bcrypt
-      const passwordHash = await bcrypt.hash(tempPassword, 10);
+      // -------------------------------------------------------
+      // Hash password
+      // -------------------------------------------------------
+      const passwordHash = await bcrypt.hash(
+        tempPassword,
+        10
+      );
 
       validRecords.push({
         candidate_id: candidateId,
+
         password_hash: passwordHash,
+
+        // IMPORTANT:
+        // Store the exact temporary password so that
+        // the credential email contains the same password.
         temp_password_plain: tempPassword,
+
         name,
         email,
         phone,
@@ -282,15 +368,33 @@ export async function importCandidates(req, res) {
       nextIndex++;
     }
 
-    // Insert into MySQL or memory store
-    if (isDbConnected() && validRecords.length > 0) {
+    // ---------------------------------------------------------
+    // Insert candidates into MySQL
+    // ---------------------------------------------------------
+    if (
+      isDbConnected() &&
+      validRecords.length > 0
+    ) {
       for (const cand of validRecords) {
         await query(
-          `INSERT INTO candidates (candidate_id, password_hash, name, email, phone, college, branch, graduation_year, position, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'INVITED')`,
+          `INSERT INTO candidates (
+            candidate_id,
+            password_hash,
+            temp_password_plain,
+            name,
+            email,
+            phone,
+            college,
+            branch,
+            graduation_year,
+            position,
+            status
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'INVITED')`,
           [
             cand.candidate_id,
             cand.password_hash,
+            cand.temp_password_plain,
             cand.name,
             cand.email,
             cand.phone,
@@ -301,92 +405,321 @@ export async function importCandidates(req, res) {
           ]
         );
       }
-    } else if (validRecords.length > 0) {
+    }
+
+    // ---------------------------------------------------------
+    // Memory store fallback
+    // ---------------------------------------------------------
+    else if (validRecords.length > 0) {
       for (const cand of validRecords) {
         memoryStore.candidates.push({
           id: memoryStore.candidates.length + 1,
+
           candidate_id: cand.candidate_id,
+
           password_hash: cand.password_hash,
-          temp_password_plain: cand.temp_password_plain,
+
+          temp_password_plain:
+            cand.temp_password_plain,
+
           name: cand.name,
           email: cand.email,
           phone: cand.phone,
           college: cand.college,
           branch: cand.branch,
-          graduation_year: cand.graduation_year,
+
+          graduation_year:
+            cand.graduation_year,
+
           position: cand.position,
+
           status: 'INVITED',
+
           violations_count: 0,
-          interview_status: 'NOT_SCHEDULED',
+
+          interview_status:
+            'NOT_SCHEDULED',
+
           email_sent: false,
         });
       }
     }
 
-    return res.status(200).json({
-      success: true,
-      summary: {
-        totalDetected: records.length,
-        validImported: validRecords.length,
-        duplicateEmails: duplicates,
-        invalidRecords: invalid,
+    // ---------------------------------------------------------
+    // Response
+    // ---------------------------------------------------------
+    return res.status(2
+
+        invalidRecords:
+      invalid,
       },
-      importedSample: validRecords.slice(0, 5).map((r) => ({
-        candidateId: r.candidate_id,
-        name: r.name,
-        email: r.email,
-        college: r.college,
-        branch: r.branch,
-      })),
+
+  importedSample:
+  validRecords.slice(0, 5).map((r) => ({
+    candidateId: r.candidate_id,
+    name: r.name,
+    email: r.email,
+    college: r.college,
+    branch: r.branch,
+
+    console.error(
+      'importCandidates error:',
+      err
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        'Failed to import candidates.',
+      error: err.message,
     });
-  } catch (err) {
-    console.error('importCandidates error:', err);
-    return res.status(500).json({ success: false, message: 'Failed to import candidates.', error: err.message });
   }
 }
 
-// Bulk credential dispatch via Nodemailer
+
+// ============================================================
+// Bulk credential dispatch
+// ============================================================
+
 export async function sendCredentials(req, res) {
   try {
-    const { candidateIds } = req.body; // array of candidate IDs or empty for all unsent
+    const { candidateIds } = req.body;
 
     let candidatesToSend = [];
+
+    // ---------------------------------------------------------
+    // Get candidates from MySQL
+    // ---------------------------------------------------------
     if (isDbConnected()) {
-      if (candidateIds && candidateIds.length > 0) {
+      if (
+        candidateIds &&
+        Array.isArray(candidateIds) &&
+        candidateIds.length > 0
+      ) {
         candidatesToSend = await query(
-          `SELECT * FROM candidates WHERE candidate_id IN (?)`,
+          `SELECT *
+           FROM candidates
+           WHERE candidate_id IN (?)`,
           [candidateIds]
         );
       } else {
         candidatesToSend = await query(
-          `SELECT * FROM candidates WHERE email_sent = FALSE OR status = 'INVITED'`
+          `SELECT *
+           FROM candidates
+           WHERE email_sent = FALSE
+              OR status = 'INVITED'`
         );
       }
-    } else {
-      if (candidateIds && candidateIds.length > 0) {
-        candidatesToSend = memoryStore.candidates.filter((c) => candidateIds.includes(c.candidate_id));
+    }
+
+    // ---------------------------------------------------------
+    // Memory store
+    // ---------------------------------------------------------
+    else {
+      if (
+        candidateIds &&
+        Array.isArray(candidateIds) &&
+        candidateIds.length > 0
+      ) {
+        candidatesToSend =
+          memoryStore.candidates.filter(
+            (c) =>
+              candidateIds.includes(
+                c.candidate_id
+              )
+          );
       } else {
-        candidatesToSend = memoryStore.candidates.filter((c) => !c.email_sent || c.status === 'INVITED');
+        candidatesToSend =
+          memoryStore.candidates.filter(
+            (c) =>
+              !c.email_sent ||
+              c.status === 'INVITED'
+          );
       }
     }
 
     let sentCount = 0;
+    let failedCount = 0;
+
+    const failures = [];
+
+    // ---------------------------------------------------------
+    // Send each candidate's credentials
+    // ---------------------------------------------------------
     for (const cand of candidatesToSend) {
-      // Send official email with standard temporary password format
-      const tempPwd = cand.temp_password_plain || `Bv@${cand.candidate_id.replace('-', '')}#`;
-      await sendCandidateCredentialsEmail(cand, tempPwd);
-      cand.email_sent = true;
-      sentCount++;
+      try {
+        let tempPwd =
+          cand.temp_password_plain;
+
+        // -----------------------------------------------------
+        // Existing candidates imported before the fix may not
+        // have a temporary password stored.
+        //
+        // Generate a new password for them.
+        // -----------------------------------------------------
+        if (!tempPwd) {
+          const chars =
+            'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+
+          tempPwd = 'Bv@';
+
+          for (let i = 0; i < 5; i++) {
+            tempPwd += chars.charAt(
+              Math.floor(
+                Math.random() * chars.length
+              )
+            );
+          }
+
+          tempPwd += '#';
+
+          const passwordHash =
+            await bcrypt.hash(
+              tempPwd,
+              10
+            );
+
+          // ---------------------------------------------------
+          // Update MySQL candidate
+          // ---------------------------------------------------
+          if (isDbConnected()) {
+            await query(
+              `UPDATE candidates
+               SET password_hash = ?,
+                   temp_password_plain = ?,
+                   email_sent = FALSE,
+                   email_sent_at = NULL
+               WHERE id = ?`,
+              [
+                passwordHash,
+                tempPwd,
+                cand.id,
+              ]
+            );
+
+            // Keep object in sync
+            cand.password_hash =
+              passwordHash;
+
+            cand.temp_password_plain =
+              tempPwd;
+          }
+
+          // ---------------------------------------------------
+          // Update memory candidate
+          // ---------------------------------------------------
+          else {
+            cand.password_hash =
+              passwordHash;
+
+            cand.temp_password_plain =
+              tempPwd;
+
+            cand.email_sent = false;
+          }
+        }
+
+        // -----------------------------------------------------
+        // Send actual email service
+        // -----------------------------------------------------
+        const result =
+          await sendCandidateCredentialsEmail(
+            cand,
+            tempPwd
+          );
+
+        // -----------------------------------------------------
+        // Only count as sent if email service confirms success
+        // -----------------------------------------------------
+        if (
+          result &&
+          result.success
+        ) {
+          sentCount++;
+
+          // MySQL
+          if (isDbConnected()) {
+            await query(
+              `UPDATE candidates
+               SET email_sent = TRUE,
+                   email_sent_at = NOW()
+               WHERE id = ?`,
+              [cand.id]
+            );
+          }
+
+          // Memory
+          cand.email_sent = true;
+        } else {
+          failedCount++;
+
+          failures.push({
+            candidateId:
+              cand.candidate_id,
+
+            email:
+              cand.email,
+
+            error:
+              result?.error ||
+              'Email delivery failed.',
+          });
+        }
+      } catch (err) {
+        failedCount++;
+
+        failures.push({
+          candidateId:
+            cand.candidate_id,
+
+          email:
+            cand.email,
+
+          error:
+            err.message,
+        });
+
+        console.error(
+          `Credential email failed for ${cand.candidate_id}:`,
+          err
+        );
+      }
     }
 
+    // ---------------------------------------------------------
+    // Response
+    // ---------------------------------------------------------
     return res.status(200).json({
-      success: true,
-      message: `Dispatched official credentials to ${sentCount} candidates from hiring@brainovision.in.`,
-      dispatchedCount: sentCount,
+      success:
+        failedCount === 0,
+
+      message:
+        failedCount === 0
+          ? `Credentials successfully sent to ${sentCount} candidate(s).`
+          : `Credentials sent to ${sentCount} candidate(s), but ${failedCount} email(s) failed.`,
+
+      dispatchedCount:
+        sentCount,
+
+      failedCount,
+
+      failures,
     });
   } catch (err) {
-    console.error('sendCredentials error:', err);
-    return res.status(500).json({ success: false, message: 'Credential dispatch failed.', error: err.message });
+    console.error(
+      'sendCredentials error:',
+      err
+    );
+
+    return res.status(500).json({
+      success: false,
+
+      message:
+        'Credential dispatch failed.',
+
+      error:
+        err.message,
+    });
   }
 }
 
@@ -876,81 +1209,121 @@ export async function deduplicateQuestions(req, res) {
   }
 }
 
-// Get Admin Assessment Configuration
+// Get Admin Assessment Configuration (MySQL single source of truth)
 export async function getAssessmentConfig(req, res) {
   try {
-    const config = memoryStore.assessmentConfig || {
-      id: 'campus-2026-phase1',
-      title: 'Brainovision Campus Recruitment Assessment — 2026',
-      durationMinutes: 45,
-      passingPercentage: 60,
-      totalQuestions: 40,
-      marksPerQuestion: 1,
-      negativeMarking: false,
-      negativeMarkPenalty: 0.25,
-      maxTabSwitches: 2,
-      maxFullscreenExits: 2,
-      securityLevel: 'strict',
-      sections: [
-        { id: 'aptitude', title: 'Quantitative Aptitude', count: 15 },
-        { id: 'reasoning', title: 'Logical Reasoning', count: 10 },
-        { id: 'verbal', title: 'Verbal Ability', count: 10 },
-        { id: 'technical', title: 'Technical Core', count: 5 },
-      ],
-    };
+    const config = await getActiveAssessment();
     return res.status(200).json({ success: true, config });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 }
 
-// Update Admin Assessment Configuration (Exam duration, Cutoff %, Total Marks, Security limits)
+// Update Admin Assessment Configuration (Persisted permanently to MySQL assessments & assessment_sections)
 export async function updateAssessmentConfig(req, res) {
   try {
-    const {
-      title,
-      durationMinutes,
-      passingPercentage,
-      totalQuestions,
-      marksPerQuestion,
-      negativeMarking,
-      negativeMarkPenalty,
-      maxTabSwitches,
-      maxFullscreenExits,
-      securityLevel,
-      sections,
-      scheduleStart,
-      scheduleEnd,
-    } = req.body;
-
-    const current = memoryStore.assessmentConfig || {};
-
-    memoryStore.assessmentConfig = {
-      ...current,
-      title: title || current.title || 'Brainovision Campus Recruitment Assessment — 2026',
-      durationMinutes: durationMinutes ? Number(durationMinutes) : (current.durationMinutes || 45),
-      passingPercentage: passingPercentage !== undefined ? Number(passingPercentage) : (current.passingPercentage || 60),
-      totalQuestions: totalQuestions ? Number(totalQuestions) : (current.totalQuestions || 40),
-      marksPerQuestion: marksPerQuestion ? Number(marksPerQuestion) : (current.marksPerQuestion || 1),
-      negativeMarking: negativeMarking !== undefined ? Boolean(negativeMarking) : Boolean(current.negativeMarking),
-      negativeMarkPenalty: negativeMarkPenalty !== undefined ? Number(negativeMarkPenalty) : (current.negativeMarkPenalty || 0.25),
-      maxTabSwitches: maxTabSwitches !== undefined ? Number(maxTabSwitches) : (current.maxTabSwitches || 2),
-      maxFullscreenExits: maxFullscreenExits !== undefined ? Number(maxFullscreenExits) : (current.maxFullscreenExits || 2),
-      securityLevel: securityLevel || current.securityLevel || 'strict',
-      sections: Array.isArray(sections) ? sections : (current.sections || []),
-      scheduleStart: scheduleStart || current.scheduleStart,
-      scheduleEnd: scheduleEnd || current.scheduleEnd,
-      updatedAt: new Date().toISOString(),
-    };
-
+    const savedConfig = await saveAssessmentConfig(req.body);
     return res.status(200).json({
       success: true,
-      message: 'Assessment configuration and cutoff criteria successfully updated.',
-      config: memoryStore.assessmentConfig,
+      message: 'Assessment configuration and section question distribution saved permanently to MySQL.',
+      config: savedConfig,
     });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 }
+
+// Publish or Unpublish Assessment
+export async function togglePublishAssessment(req, res) {
+  try {
+    const { isActive, assessmentId } = req.body;
+    const config = await toggleAssessmentPublish(Boolean(isActive), assessmentId);
+    return res.status(200).json({
+      success: true,
+      message: `Assessment ${isActive ? 'published (ACTIVE)' : 'unpublished (DRAFT)'} successfully.`,
+      config,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
+// Batch Import Questions (JSON or CSV converted records)
+export async function importQuestionsBatch(req, res) {
+  try {
+    const { questions } = req.body;
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ success: false, message: 'Questions array is required.' });
+    }
+
+    let importedCount = 0;
+    const errors = [];
+
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      const section = (q.section || 'aptitude').toLowerCase();
+      const text = q.questionText || q.question_text || q.text;
+      const optA = q.optionA || q.option_a || q.options?.[0];
+      const optB = q.optionB || q.option_b || q.options?.[1];
+      const optC = q.optionC || q.option_c || q.options?.[2] || '';
+      const optD = q.optionD || q.option_d || q.options?.[3] || '';
+
+      let correctOpt = q.correctOption || q.correct_option;
+      if (!correctOpt && q.correctIndex !== undefined) {
+        correctOpt = ['A', 'B', 'C', 'D'][q.correctIndex];
+      }
+      correctOpt = (correctOpt || 'A').toUpperCase();
+      const difficulty = (q.difficulty || 'medium').toLowerCase();
+      const marks = Number(q.marks) || 1;
+      const explanation = q.explanation || '';
+
+      if (!text || !optA || !optB) {
+        errors.push({ index: i + 1, error: 'Question text and options A and B are required.' });
+        continue;
+      }
+
+      if (isDbConnected()) {
+        try {
+          await query(
+            `INSERT INTO questions (section, question_text, option_a, option_b, option_c, option_d, correct_option, difficulty, marks, explanation, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')`,
+            [section, text, optA, optB, optC, optD, correctOpt, difficulty, marks, explanation]
+          );
+        } catch (dbErr) {
+          errors.push({ index: i + 1, question: text, error: dbErr.message });
+          continue;
+        }
+      }
+
+      const newQ = {
+        id: memoryStore.questions.length + 1,
+        section,
+        question_text: text,
+        option_a: optA,
+        option_b: optB,
+        option_c: optC,
+        option_d: optD,
+        correct_option: correctOpt,
+        difficulty,
+        marks,
+        explanation,
+        status: 'ACTIVE',
+      };
+      memoryStore.questions.push(newQ);
+      importedCount++;
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully imported ${importedCount} question(s) into question bank.`,
+      importedCount,
+      errors,
+      totalRemaining: isDbConnected() ? undefined : memoryStore.questions.length,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+}
+
 
 

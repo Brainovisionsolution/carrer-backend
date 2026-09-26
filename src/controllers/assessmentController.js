@@ -1,5 +1,6 @@
 import { query, memoryStore, isDbConnected } from '../config/db.js';
 import { evaluateAttempt } from '../services/scoringService.js';
+import { getActiveAssessment } from '../services/assessmentConfigService.js';
 
 // Helper to sanitize questions: NEVER send correct_option or explanation to candidate
 function sanitizeQuestions(questions) {
@@ -71,34 +72,55 @@ export async function startAssessment(req, res) {
       });
     }
 
-    // 2. Create NEW authoritative assessment attempt
-    const config = memoryStore.assessmentConfig || {};
-    const attemptCode = `ATT-2026-0926-${String(Math.floor(100000 + Math.random() * 900000))}`;
-    const durationMinutes = config.durationMinutes || 45;
+    // 2. Fetch Active Published Assessment from MySQL (Single Source of Truth)
+    const activeAssessment = await getActiveAssessment();
+
+    if (!activeAssessment || activeAssessment.isActive === false) {
+      return res.status(403).json({
+        success: false,
+        message: 'The online assessment is currently closed or unpublished by the recruitment team.',
+      });
+    }
+
+    const assessmentId = activeAssessment.id || 1;
+    const durationMinutes = Number(activeAssessment.durationMinutes || activeAssessment.duration_minutes || 45);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + durationMinutes * 60 * 1000);
-
+    const attemptCode = `ATT-2026-${String(Math.floor(100000 + Math.random() * 900000))}`;
 
     let attemptId = null;
 
     if (isDbConnected()) {
+      // Server-side dynamic question selection based on assessment_sections configured in MySQL
+      const selectedQuestions = [];
+      const configuredSections = activeAssessment.sections || [];
+
+      for (const section of configuredSections) {
+        const secKey = (section.section_key || section.id || '').toLowerCase();
+        const count = Number(section.count ?? section.question_count) || 0;
+        if (count > 0) {
+          const secQs = await query(
+            `SELECT * FROM questions WHERE section = ? AND status = 'ACTIVE' ORDER BY RAND() LIMIT ?`,
+            [secKey, count]
+          );
+          if (secQs && secQs.length > 0) {
+            selectedQuestions.push(...secQs);
+          }
+        }
+      }
+
+      // Calculate total marks dynamically
+      const totalMarks = selectedQuestions.reduce((sum, q) => sum + (Number(q.marks) || 1), 0) || (selectedQuestions.length * 1);
+
       const insRes = await query(
-        `INSERT INTO attempts (attempt_code, candidate_id, assessment_id, started_at, expires_at, last_heartbeat_at, status)
-         VALUES (?, ?, 1, ?, ?, ?, 'IN_PROGRESS')`,
-        [attemptCode, candidateId, now, expiresAt, now]
+        `INSERT INTO attempts (attempt_code, candidate_id, assessment_id, started_at, expires_at, last_heartbeat_at, status, total_marks)
+         VALUES (?, ?, ?, ?, ?, ?, 'IN_PROGRESS', ?)`,
+        [attemptCode, candidateId, assessmentId, now, expiresAt, now, totalMarks]
       );
       attemptId = insRes.insertId;
 
       // Update candidate status to IN_PROGRESS
       await query(`UPDATE candidates SET status = 'IN_PROGRESS' WHERE id = ?`, [candidateId]);
-
-      // Server-side question selection (15 Aptitude, 10 Reasoning, 10 Verbal, 5 Technical)
-      const aptitudeQs = await query(`SELECT * FROM questions WHERE section = 'aptitude' AND status = 'ACTIVE' ORDER BY RAND() LIMIT 15`);
-      const reasoningQs = await query(`SELECT * FROM questions WHERE section = 'reasoning' AND status = 'ACTIVE' ORDER BY RAND() LIMIT 10`);
-      const verbalQs = await query(`SELECT * FROM questions WHERE section = 'verbal' AND status = 'ACTIVE' ORDER BY RAND() LIMIT 10`);
-      const techQs = await query(`SELECT * FROM questions WHERE section = 'technical' AND status = 'ACTIVE' ORDER BY RAND() LIMIT 5`);
-
-      const selectedQuestions = [...aptitudeQs, ...reasoningQs, ...verbalQs, ...techQs];
 
       // Save question order for this attempt
       for (let i = 0; i < selectedQuestions.length; i++) {
@@ -109,12 +131,14 @@ export async function startAssessment(req, res) {
       }
 
       const sanitized = sanitizeQuestions(selectedQuestions);
-      const remainingSeconds = Math.max(0, Math.floor((expiresAt - now) / 1000));
+      const remainingSeconds = Math.max(0, Math.floor((expiresAt.getTime() - now.getTime()) / 1000));
 
       return res.status(201).json({
         success: true,
         attemptId,
         attemptCode,
+        assessmentId,
+        assessmentTitle: activeAssessment.title,
         startedAt: now.toISOString(),
         expiresAt: expiresAt.toISOString(),
         remainingSeconds,
@@ -124,19 +148,41 @@ export async function startAssessment(req, res) {
         markedForReview: [],
       });
     } else {
-      // Memory store fallback
+      // Memory store fallback with dynamic section question counts
       attemptId = memoryStore.attempts.length + 1;
+      const configuredSections = activeAssessment.sections || [];
+      const selectedQuestions = [];
+
+      for (const section of configuredSections) {
+        const secKey = (section.section_key || section.id || '').toLowerCase();
+        const count = Number(section.count ?? section.question_count) || 0;
+        if (count > 0) {
+          const secQs = (memoryStore.questions || [])
+            .filter((q) => q.section === secKey && q.status === 'ACTIVE')
+            .sort(() => 0.5 - Math.random())
+            .slice(0, count);
+          selectedQuestions.push(...secQs);
+        }
+      }
+
+      // Fallback if no questions in specific sections
+      if (selectedQuestions.length === 0) {
+        selectedQuestions.push(...(memoryStore.questions || []));
+      }
+
+      const totalMarks = selectedQuestions.reduce((sum, q) => sum + (Number(q.marks) || 1), 0) || (selectedQuestions.length * 1);
+
       const memoryAttempt = {
         id: attemptId,
         attempt_code: attemptCode,
         candidate_id: candidateId,
-        assessment_id: 1,
+        assessment_id: assessmentId,
         started_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),
         last_heartbeat_at: now.toISOString(),
         status: 'IN_PROGRESS',
         score: 0,
-        total_marks: 40,
+        total_marks: totalMarks,
         percentage: 0,
       };
       memoryStore.attempts.push(memoryAttempt);
@@ -144,12 +190,14 @@ export async function startAssessment(req, res) {
       const candidate = memoryStore.candidates.find((c) => c.id === candidateId);
       if (candidate) candidate.status = 'IN_PROGRESS';
 
-      const sanitized = sanitizeQuestions(memoryStore.questions);
+      const sanitized = sanitizeQuestions(selectedQuestions);
 
       return res.status(201).json({
         success: true,
         attemptId,
         attemptCode,
+        assessmentId,
+        assessmentTitle: activeAssessment.title,
         startedAt: now.toISOString(),
         expiresAt: expiresAt.toISOString(),
         remainingSeconds: durationMinutes * 60,
@@ -233,9 +281,17 @@ export async function saveAnswer(req, res) {
       return res.status(400).json({ success: false, message: 'Question ID and option are required.' });
     }
 
+    const candidateTokenId = req.candidate?.id;
+
     if (isDbConnected()) {
       // Validate that attempt is still valid and within server timer
-      const attempts = await query(`SELECT * FROM attempts WHERE id = ?`, [id]);
+      const attempts = await query(
+        `SELECT a.* FROM attempts a
+         LEFT JOIN candidates c ON a.candidate_id = c.id
+         WHERE a.id = ? OR a.attempt_code = ? OR c.candidate_id = ? OR a.candidate_id = ?
+         ORDER BY a.id DESC LIMIT 1`,
+        [id, id, id, candidateTokenId || 0]
+      );
       if (!attempts || attempts.length === 0) {
         return res.status(404).json({ success: false, message: 'Attempt not found.' });
       }
@@ -258,7 +314,7 @@ export async function saveAnswer(req, res) {
            selected_option = VALUES(selected_option),
            is_marked_for_review = VALUES(is_marked_for_review),
            saved_at = NOW()`,
-        [id, questionId, selectedOption.toUpperCase(), Boolean(isMarkedForReview)]
+        [attempt.id, questionId, selectedOption.toUpperCase(), Boolean(isMarkedForReview)]
       );
 
       return res.status(200).json({
@@ -269,7 +325,13 @@ export async function saveAnswer(req, res) {
     }
 
     // Memory store fallback
-    const attempt = memoryStore.attempts.find((a) => a.id === Number(id));
+    const attempt = memoryStore.attempts.find((a) =>
+      String(a.id) === String(id) ||
+      a.attempt_code === id ||
+      (a.candidate_id && String(a.candidate_id) === String(id)) ||
+      (a.candidate_code && a.candidate_code === id) ||
+      (candidateTokenId && a.candidate_id === candidateTokenId)
+    );
     if (!attempt) {
       return res.status(404).json({ success: false, message: 'Attempt not found.' });
     }
@@ -281,16 +343,19 @@ export async function saveAnswer(req, res) {
       return res.status(400).json({ success: false, message: 'Attempt is no longer in progress.' });
     }
 
-    let ans = memoryStore.answers.find((a) => a.attempt_id === Number(id) && a.question_id === Number(questionId));
+    let ans = memoryStore.answers.find((a) =>
+      (a.attempt_id === attempt.id || String(a.attempt_id) === String(id)) &&
+      String(a.question_id) === String(questionId)
+    );
     if (ans) {
       ans.selected_option = selectedOption.toUpperCase();
       ans.is_marked_for_review = Boolean(isMarkedForReview);
       ans.saved_at = now.toISOString();
     } else {
-      const question = memoryStore.questions.find((q) => q.id === Number(questionId));
+      const question = memoryStore.questions.find((q) => String(q.id) === String(questionId));
       memoryStore.answers.push({
-        attempt_id: Number(id),
-        question_id: Number(questionId),
+        attempt_id: attempt.id,
+        question_id: Number(questionId) || questionId,
         selected_option: selectedOption.toUpperCase(),
         is_marked_for_review: Boolean(isMarkedForReview),
         saved_at: now.toISOString(),
@@ -444,14 +509,25 @@ export async function recordSecurityEvent(req, res) {
 // Public or candidate-accessible config for rules, timing, and cutoffs
 export async function getCandidateAssessmentConfig(req, res) {
   try {
-    const config = memoryStore.assessmentConfig || {
-      title: 'Brainovision Campus Recruitment Assessment — 2026',
-      durationMinutes: 45,
-      passingPercentage: 60,
-      totalQuestions: 40,
-      maxTabSwitches: 2,
-      maxFullscreenExits: 2,
-      securityLevel: 'strict',
+    const assessment = await getActiveAssessment();
+    const config = {
+      id: assessment.id,
+      title: assessment.title,
+      description: assessment.description || '',
+      durationMinutes: assessment.durationMinutes || 45,
+      passingPercentage: assessment.passingPercentage || 60,
+      totalQuestions: assessment.totalQuestions || 40,
+      maxTabSwitches: assessment.maxTabSwitches || 2,
+      maxFullscreenExits: assessment.maxFullscreenExits || 2,
+      securityLevel: assessment.securityLevel || 'strict',
+      negativeMarking: Boolean(assessment.negativeMarking),
+      isActive: assessment.isActive !== undefined ? Boolean(assessment.isActive) : true,
+      sections: (assessment.sections || []).map((s) => ({
+        id: s.id || s.section_key,
+        title: s.title,
+        count: s.count,
+        marksPerQuestion: s.marksPerQuestion || 1,
+      })),
     };
     return res.status(200).json({ success: true, config });
   } catch (err) {

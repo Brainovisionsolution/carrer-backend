@@ -13,15 +13,20 @@ export async function evaluateAttempt(attemptId) {
        FROM attempts a
        JOIN candidates c ON a.candidate_id = c.id
        JOIN assessments asm ON a.assessment_id = asm.id
-       WHERE a.id = ?`,
-      [attemptId]
+       WHERE a.id = ? OR c.candidate_id = ? OR a.attempt_code = ?`,
+      [attemptId, attemptId, attemptId]
     );
     if (!attempts || attempts.length === 0) {
       throw new Error(`Attempt with ID ${attemptId} not found`);
     }
     attempt = attempts[0];
   } else {
-    attempt = memoryStore.attempts.find(a => a.id === Number(attemptId));
+    attempt = memoryStore.attempts.find(a =>
+      String(a.id) === String(attemptId) ||
+      (a.candidate_id && String(a.candidate_id) === String(attemptId)) ||
+      a.attempt_code === attemptId ||
+      a.candidate_code === attemptId
+    );
     if (!attempt) throw new Error(`Attempt with ID ${attemptId} not found`);
   }
 
@@ -33,22 +38,64 @@ export async function evaluateAttempt(attemptId) {
        FROM answers ans
        JOIN questions q ON ans.question_id = q.id
        WHERE ans.attempt_id = ?`,
-      [attemptId]
+      [attempt.id]
     );
   } else {
-    answersList = (memoryStore.answers || []).filter(a => a.attempt_id === Number(attemptId));
+    answersList = (memoryStore.answers || []).filter(a =>
+      String(a.attempt_id) === String(attempt.id) ||
+      String(a.attempt_id) === String(attemptId)
+    );
   }
 
-  // 3. Compute score and sectional breakdowns
+  // 3. Compute score and sectional breakdowns dynamically from assessment_sections
   let totalScore = 0;
-  const sectionScores = {
-    aptitude: { section: 'aptitude', sectionTitle: 'Quantitative Aptitude', score: 0, total: 15, percentage: 0 },
-    reasoning: { section: 'reasoning', sectionTitle: 'Logical Reasoning', score: 0, total: 10, percentage: 0 },
-    verbal: { section: 'verbal', sectionTitle: 'Verbal Ability', score: 0, total: 10, percentage: 0 },
-    technical: { section: 'technical', sectionTitle: 'Technical Core', score: 0, total: 5, percentage: 0 },
-  };
-
   const config = memoryStore.assessmentConfig || {};
+  let sectionScores = {};
+
+  if (isDbConnected()) {
+    try {
+      const asmSections = await query(
+        `SELECT * FROM assessment_sections WHERE assessment_id = ? ORDER BY display_order ASC`,
+        [attempt.assessment_id || 1]
+      );
+      if (asmSections && asmSections.length > 0) {
+        for (const s of asmSections) {
+          sectionScores[s.section_key] = {
+            section: s.section_key,
+            sectionTitle: s.title,
+            score: 0,
+            total: s.question_count * (s.marks_per_question || 1),
+            percentage: 0,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Scoring service sections query notice:', e.message);
+    }
+  }
+
+  if (Object.keys(sectionScores).length === 0) {
+    const configSections = config.sections || [];
+    if (configSections.length > 0) {
+      for (const s of configSections) {
+        const k = (s.id || s.section_key || 'aptitude').toLowerCase();
+        sectionScores[k] = {
+          section: k,
+          sectionTitle: s.title || (k.charAt(0).toUpperCase() + k.slice(1)),
+          score: 0,
+          total: (s.count || 10) * (s.marksPerQuestion || 1),
+          percentage: 0,
+        };
+      }
+    } else {
+      sectionScores = {
+        aptitude: { section: 'aptitude', sectionTitle: 'Quantitative Aptitude', score: 0, total: 15, percentage: 0 },
+        reasoning: { section: 'reasoning', sectionTitle: 'Logical Reasoning', score: 0, total: 10, percentage: 0 },
+        verbal: { section: 'verbal', sectionTitle: 'Verbal Ability', score: 0, total: 10, percentage: 0 },
+        technical: { section: 'technical', sectionTitle: 'Technical Core', score: 0, total: 5, percentage: 0 },
+      };
+    }
+  }
 
   for (const item of answersList) {
     const isCorrect = item.selected_option && item.correct_option &&
@@ -83,7 +130,8 @@ export async function evaluateAttempt(attemptId) {
     s.percentage = s.total > 0 ? parseFloat(((s.score / s.total) * 100).toFixed(1)) : 0;
   });
 
-  const totalMarks = attempt.total_marks || config.totalQuestions || (answersList.length > 0 ? answersList.length : 40);
+  const sumSectionTotals = Object.values(sectionScores).reduce((sum, s) => sum + (Number(s.total) || 0), 0);
+  const totalMarks = attempt.total_marks || (sumSectionTotals > 0 ? sumSectionTotals : (config.totalQuestions || 40));
   const percentage = totalMarks > 0 ? parseFloat(((totalScore / totalMarks) * 100).toFixed(1)) : 0;
   const passingCutoff = attempt.passing_percentage || config.passingPercentage || 60.0;
 
