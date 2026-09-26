@@ -448,29 +448,28 @@ export async function importCandidates(req, res) {
     // ---------------------------------------------------------
     // Response
     // ---------------------------------------------------------
-    return res.status(2
-
-        invalidRecords:
-      invalid,
+    return res.status(200).json({
+      success: true,
+      message: `Successfully imported ${validRecords.length} candidate(s).`,
+      summary: {
+        totalDetected: records.length,
+        validImported: validRecords.length,
+        duplicateEmails: duplicates,
+        invalidRecords: invalid,
       },
-
-  importedSample:
-  validRecords.slice(0, 5).map((r) => ({
-    candidateId: r.candidate_id,
-    name: r.name,
-    email: r.email,
-    college: r.college,
-    branch: r.branch,
-
-    console.error(
-      'importCandidates error:',
-      err
-    );
-
+      importedSample: validRecords.slice(0, 5).map((r) => ({
+        candidateId: r.candidate_id,
+        name: r.name,
+        email: r.email,
+        college: r.college,
+        branch: r.branch,
+      })),
+    });
+  } catch (err) {
+    console.error('importCandidates error:', err);
     return res.status(500).json({
       success: false,
-      message:
-        'Failed to import candidates.',
+      message: 'Failed to import candidates.',
       error: err.message,
     });
   }
