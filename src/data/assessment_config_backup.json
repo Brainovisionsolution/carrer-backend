@@ -1,0 +1,50 @@
+{
+  "id": "campus-2026-phase1",
+  "title": "Brainovision Campus Recruitment Assessment — 2026",
+  "durationMinutes": 60,
+  "passingPercentage": 65,
+  "totalQuestions": 52,
+  "marksPerQuestion": 1,
+  "negativeMarking": true,
+  "negativeMarkPenalty": 0.25,
+  "maxTabSwitches": 3,
+  "maxFullscreenExits": 2,
+  "securityLevel": "strict",
+  "sections": [
+    {
+      "id": "aptitude",
+      "section_key": "aptitude",
+      "title": "Quantitative Aptitude",
+      "count": 20,
+      "marksPerQuestion": 1,
+      "displayOrder": 1
+    },
+    {
+      "id": "reasoning",
+      "section_key": "reasoning",
+      "title": "Logical Reasoning",
+      "count": 12,
+      "marksPerQuestion": 1,
+      "displayOrder": 2
+    },
+    {
+      "id": "verbal",
+      "section_key": "verbal",
+      "title": "Verbal Ability",
+      "count": 12,
+      "marksPerQuestion": 1,
+      "displayOrder": 3
+    },
+    {
+      "id": "technical",
+      "section_key": "technical",
+      "title": "Technical Core",
+      "count": 8,
+      "marksPerQuestion": 1,
+      "displayOrder": 4
+    }
+  ],
+  "description": "Updated dynamic screening test persisted in database",
+  "isActive": true,
+  "updatedAt": "2026-09-26T04:59:39.995Z"
+}
